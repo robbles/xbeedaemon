@@ -11,8 +11,8 @@ Copyright (c) 2009 Turk Innovations. All rights reserved.
 """
 
 import sys
-import unittest
-from serial import Serial, EIGHTBITS, PARITY_NONE, STOPBITS_ONE
+from optparse import OptionParser
+from serial import Serial
 from struct import pack, unpack
 from StringIO import StringIO
 
@@ -41,9 +41,10 @@ class XbeeDaemon(dbus.service.Object):
         else:
             self.serial = Serial(port=port, baudrate=baudrate, timeout=timeout)  
              
+        self.name = name
         object_path = XBEED_OBJECT % name
         dbus.service.Object.__init__(self, dbus.SessionBus(), object_path)
-        #gobject.io_add_watch(self.serial.fileno(), gobject.IO_IN, self.serial_read)
+        gobject.io_add_watch(self.serial.fileno(), gobject.IO_IN, self.serial_read)
         
     def serial_read(self):
         """ Called when there is data available from the serial port """
@@ -51,15 +52,14 @@ class XbeeDaemon(dbus.service.Object):
         buffer = self.serial.read(256)
         print 'xbeed: read %d chars' % len(buffer)
     
-    @dbus.service.method(XBEED_INTERFACE, in_signature='tay', out_signature='i')  
+    @dbus.service.method(XBEED_INTERFACE, in_signature='tay', out_signature='')  
     def SendData(self, hw_address, data):
         print 'xbeed: SendData called, sending %d bytes to address 0x%X' % (len(data), hw_address)
-        return 1
     
-    @dbus.service.method(XBEED_INTERFACE, in_signature='i', out_signature='i')    
+    @dbus.service.method(XBEED_INTERFACE, in_signature='s', out_signature='as')    
     def GetInfo(self, arg):
         print 'xbeed: GetInfo called'
-        return arg
+        return ['info1', 'info2', 'useless info', 'I\'m %s!'%self.name]
 
 class FrameEscaper(Serial):
     """
@@ -111,7 +111,6 @@ class XbeeModuleFrame(object):
         # Raise exception containing real / expected value if checksum fails
         if not validate_checksum(data, offset=3):
             printHex(data)
-            set_trace()
             raise ChecksumFail(ord(data[-1]), generate_checksum(data))
         if not (len(data) == length + 4):
             raise InvalidPacketLength(length)
@@ -212,61 +211,19 @@ class InvalidPacketLength(Exception): pass
 class UnknownFrameType(Exception):
     pass
 
-##########  Unit testing ########## 
+########## Utility Functions ###########
 
-class xbeedTests(unittest.TestCase):
-    def setUp(self):
-        self.TransmitRequest_frame = '\x7E\x00\x16\x10\x01\x00\x13\xA2\x00\x40\x0A\x01\x27\xFF\xFE\x00\x00\x54\x78\x44\x61\x74\x61\x30\x41\x13'
-        self.TransmitRequest_frame_escaped = '\x7E\x00\x16\x10\x01\x00\x7D\x33\xA2\x00\x40\x0A\x01\x27\xFF\xFE\x00\x00\x54\x78\x44\x61\x74\x61\x30\x41\x7D\x33'
-        self.ZigbeeTransmitStatus_frame = '\x7E\x00\x07\x8B\x01\xFF\xFE\x01\x24\x00\x51'
-        self.ReceivePacket_frame = '\x7E\x00\x10\x90\x11\x11\x11\x11\x11\x11\x11\x11\x22\x22\x01\x00\x00\x00\x00\xA2'
-        
-    def testapi_ids(self):
-        """ Test to make sure all api_ids are associated with the right packet type """
-        self.failUnless(XbeeModuleFrame.api_ids[0x8B] == TransmitStatus)
-
-    def test_generate_checksum(self):
-        csum = generate_checksum(self.TransmitRequest_frame[:-1], offset=3)
-        self.failUnless(csum == ord(self.TransmitRequest_frame[-1]))
-        
-        csum = generate_checksum(self.ZigbeeTransmitStatus_frame[:-1], offset=3)
-        self.failUnless(csum == ord(self.ZigbeeTransmitStatus_frame[-1]))
-        
-    def test_validate_checksum(self):
-        self.failUnless(validate_checksum(self.TransmitRequest_frame, offset=3))
-        self.failUnless(validate_checksum(self.ZigbeeTransmitStatus_frame, offset=3))
-
-    def test_TransmitRequest1(self):
-        """ Try to build a TransmitRequest frame """
-        packet = TransmitRequest(frame_id=0x01, hw_addr=0x0013A200400A0127, net_addr=0xFFFE, rf_data='TxData0A')
-        frame = packet.get_frame()        
-        self.failUnless(frame == self.TransmitRequest_frame)
-
-    def test_TransmitStatus1(self):
-        packet = XbeeModuleFrame.parse(self.ZigbeeTransmitStatus_frame)
-        self.failUnless(isinstance(packet, TransmitStatus))
-        
-    def test_ReceivePacket_frame(self):
-        packet = XbeeModuleFrame.parse(self.ReceivePacket_frame)
-        
-    def test_escape(self):
-        escaped = ''.join(FrameEscaper.escape(self.TransmitRequest_frame))
-        self.failUnless(escaped == self.TransmitRequest_frame_escaped)
-        
-    def test_unescape(self):
-        unescaped = ''.join(FrameEscaper.unescape(self.TransmitRequest_frame_escaped))
-        self.failUnless(unescaped == self.TransmitRequest_frame)
-    
-    def test_main(self):
-        main()
-        
+def getXbeeByName(name):
+    return (XBEED_SERVICE, XBEED_OBJECT % name)
+  
 def printHex(data):
     for byte in data:
         print '0x%X ' % ord(byte),
     print  
-        
-        
-def main():
+     
+
+   
+def main1():
      dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
      name = dbus.service.BusName(XBEED_SERVICE, dbus.SessionBus())
@@ -276,6 +233,19 @@ def main():
      print "Running Xbeed interface."
      mainloop.run()       
 
-if __name__ == '__main__':
-    unittest.main()
+def main(argv=None):
+    usage = "usage: %prog [options] <serial port> <dbus label>"
+    parser = OptionParser(usage)
+    parser.add_option("-q", "--quiet",
+                      action="store_false", dest="verbose", default=True,
+                      help="don't print status messages to stdout")
+    parser.add_option("-f", "--foreground",
+                      action="store_false", dest="daemon", default=True,
+                      help="run in foreground instead of forking a daemon process")
+    (options, args) = parser.parse_args()
+    if len(args) != 1:
+            parser.error("incorrect number of arguments")
     
+
+if __name__ == "__main__":
+    sys.exit(main())
