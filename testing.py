@@ -16,6 +16,7 @@ XBEE0 = 0x0013A2004052989D
 XBEE1 = 0x0013A200400A0127
 XBEE2 = 0x0013A2004052DA9A
 
+
 class xbeedTests(unittest.TestCase):
     def setUp(self):        
         pass
@@ -23,7 +24,7 @@ class xbeedTests(unittest.TestCase):
     @enable()  
     def testapi_ids(self):
         """ Test to make sure all api_ids are associated with the right packet type """
-        self.failUnless(XbeeModuleFrame.api_ids[0x8B] == TransmitStatus)
+        self.failUnless(XBeeModuleFrame.api_ids[0x8B] == TransmitStatus)
 
     @enable()
     def test_generate_checksum(self):
@@ -47,30 +48,30 @@ class xbeedTests(unittest.TestCase):
         
     @enable()
     def test_TransmitStatus1(self):
-        packet = XbeeModuleFrame.parse(ZigbeeTransmitStatus_frame)
+        packet = XBeeModuleFrame.parse(ZigbeeTransmitStatus_frame, TransmitStatus.api_id, len(ZigbeeTransmitStatus_frame) - 4)
         self.failUnless(isinstance(packet, TransmitStatus))
        
     @enable()
     def test_ReceivePacket_frame(self):
-        packet = XbeeModuleFrame.parse(ReceivePacket_frame)
+        packet = XBeeModuleFrame.parse(ReceivePacket_frame, ReceivePacket.api_id, len(ReceivePacket_frame) - 4)
     
     @enable()   
     def test_escape(self):
-        escaped = ''.join(FrameEscaper.escape(TransmitRequest_frame))
+        escaped = ''.join(escape(TransmitRequest_frame))
         self.failUnless(escaped == TransmitRequest_frame_escaped)
     
     @enable()    
     def test_unescape(self):
-        unescaped = ''.join(FrameEscaper.unescape(TransmitRequest_frame_escaped))
+        unescaped = ''.join(unescape(TransmitRequest_frame_escaped))
         self.failUnless(unescaped == TransmitRequest_frame)
 
-    @enable(False)
+    @enable()
     def test_GetInfo(self):
         try:
             bus = dbus.SessionBus()
-            xbee = bus.get_object(*getXbeeByName('Xbee0'))
+            xbee = bus.get_object(*getDaemonByName('XBee0'))
             response = xbee.GetInfo('give me some info')
-            print 'received \'%s\' from calling Xbee0.GetInfo()' % response
+            print 'received \'%s\' from calling XBee0.GetInfo()' % response
         except dbus.DBusException, e:
             self.fail(e)
 
@@ -78,13 +79,12 @@ class xbeedTests(unittest.TestCase):
     def test_SendData(self):
         try:
             bus = dbus.SessionBus()
-            xbee = bus.get_object(*getXbeeByName('Xbee0'))
+            xbee = bus.get_object(*getDaemonByName('XBee0'))
             address = dbus.UInt64(XBEE0)
             response = xbee.SendData(address, 'hello', 1)
             self.failUnless(response == None)
         except dbus.DBusException, e:
             self.fail(e)
-            
         
 if __name__ == '__main__':
     unittest.main()
