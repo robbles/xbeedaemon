@@ -43,7 +43,7 @@ class XBeeDaemon(dbus.service.Object):
         self.object_path = XBEED_DAEMON_OBJECT % name
         self.partial = PartialFrame()
         
-        dbus.service.Object.__init__(self, dbus.SessionBus(), self.object_path)
+        dbus.service.Object.__init__(self, dbus.SystemBus(), self.object_path)
         gobject.io_add_watch(self.serial.fileno(), gobject.IO_IN, self.serial_read)
         
     def serial_read(self, fd, condition, *args):
@@ -62,8 +62,9 @@ class XBeeDaemon(dbus.service.Object):
         if isinstance(packet, TransmitStatus):
             print 'Transmit status for packet %d received: %s' % (packet.frame_id, packet.status)
         elif isinstance(packet, ReceivePacket):
-            XBeeModule(packet.hw_addr).RecievedData(packet.rf_data)
-    
+            #XBeeModule.get(packet.hw_addr).RecievedData(packet.rf_data)
+            pass
+            
     @dbus.service.method(XBEED_INTERFACE, in_signature='tayy', out_signature='')  
     def SendData(self, hw_addr, rf_data, frame_id):
         """ Sends an RF data packet to the specified XBee module """
@@ -133,21 +134,14 @@ class XBeeModuleFrame(object):
             raise ChecksumFail(ord(data[-1]), generate_checksum(data))
         
         # Parse and return specific packet structure
-        ptype = cls.api_ids[api_id]
+        ptype = API_IDS[api_id]
         if ptype.length_mod:
             signature = ptype.signature % (length - ptype.length_mod)
         else:
             signature = ptype.signature
         fields = unpack(signature, data)
         return ptype(*fields)
-
-    @classmethod
-    def api_packet(cls, packet_class):
-        """ Associates a packet type with the corresponding api_id for automatic parsing """
-        cls.api_ids[packet_class.api_id] = packet_class
-        return packet_class
       
-@XBeeModuleFrame.api_packet
 class TransmitStatus(XBeeModuleFrame):
     """ When a TX Request is completed, the module sends a TX Status message. This message
         will indicate if the packet was transmitted successfully or if there was a failure."""
@@ -162,7 +156,6 @@ class TransmitStatus(XBeeModuleFrame):
         self.status = (status, self.statuses.get(status, 'Unknown Status'))
         self.discovery = discovery
 
-@XBeeModuleFrame.api_packet  
 class ReceivePacket(XBeeModuleFrame):
     """ When the module receives an RF packet, it is sent out the UART using this message type. """
     signature = '>4xQHB%dsx'
@@ -200,21 +193,23 @@ class TransmitRequest(XBeeClientFrame):
         self.signature = self.signature % len(rf_data)
         self.length = len(rf_data) + 14
    
-   
+API_IDS = {0x8B: TransmitStatus, 0x90: ReceivePacket}
+
 ############################## XBee Status Object ##############################
 
 class XBeeModule(dbus.service.Object):
     """ Represents a remote XBee module, and signals when packets are received
         from that module."""
     modules = {}
-    def __new__(cls, hw_addr):
+    def __init__(self, hw_addr):
+        dbus.service.Object.__init__(self, dbus.SystemBus(), XBEED_MODULE_OBJECT % (hw_addr))
+    
+    @classmethod
+    def get(cls, hw_addr):
         if hw_addr not in cls.modules:
             cls.modules[hw_addr] = dbus.service.Object.__new__(cls, hw_addr)
         return cls.modules[hw_addr]
         
-    def __init__(self, hw_addr):
-        dbus.service.Object.__init__(self, dbus.SessionBus(), XBEED_MODULE_OBJECT % (hw_addr))
-    
     @dbus.service.signal(dbus_interface=XBEED_INTERFACE, signature='ay') 
     def RecievedData(self, rf_data):
         """ Called when data is received from the module """
@@ -303,7 +298,7 @@ def main(argv=None):
     
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
-    name = dbus.service.BusName(XBEED_SERVICE, dbus.SessionBus())
+    name = dbus.service.BusName(XBEED_SERVICE, dbus.SystemBus())
     daemon = XBeeDaemon(name=args[0], port=args[1], baudrate=options.baudrate, escaping=options.escaping)
 
     mainloop = gobject.MainLoop()
