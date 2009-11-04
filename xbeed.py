@@ -58,12 +58,11 @@ class XBeeDaemon(dbus.service.Object):
         return True # Keep calling this function when data is available
     
     def handle_packet(self, packet):
-        if isinstance(packet, TransmitStatus):
-            print 'Transmit status for packet %d received: %s' % (packet.frame_id, packet.status)
-        elif isinstance(packet, ReceivePacket):
+        print packet
+        if isinstance(packet, ReceivePacket):
             XBeeModule.get(packet.hw_addr).RecievedData(packet.rf_data, packet.hw_addr)
             
-    @dbus.service.method(XBEED_INTERFACE, in_signature='tayy', out_signature='')  
+    @dbus.service.method(XBEED_INTERFACE, in_signature='tayy', out_signature='', byte_arrays=True)  
     def SendData(self, hw_addr, rf_data, frame_id):
         """ Sends an RF data packet to the specified XBee module """
         print 'xbeed: SendData called, sending %d bytes to address 0x%X' % (len(rf_data), hw_addr)
@@ -76,7 +75,7 @@ class XBeeDaemon(dbus.service.Object):
         print 'xbeed: GetInfo called'
         return self.object_path2
         
-    @dbus.service.method(XBEED_INTERFACE, in_signature='tay', out_signature='')
+    @dbus.service.method(XBEED_INTERFACE, in_signature='tay', out_signature='', byte_arrays=True)
     def FakeReceivedData(self, hw_addr, rf_data):
         print 'Faking receive of packet from 0x%X, %d bytes' % (hw_addr, len(rf_data))
         XBeeModule.get(hw_addr).RecievedData(rf_data, hw_addr)
@@ -91,6 +90,7 @@ class EscapingSerial(Serial):
         self.escape_flag = False
         
     def write(self, data):
+        print 'writing %d bytes to serial port' % len(data)
         Serial.write(self, ''.join(escape(data)))
        
     def read(self, size=1):
@@ -139,14 +139,13 @@ class XBeeModuleFrame(object):
     
     @classmethod
     def parse(cls, data, api_id, length):
-        print 'XBeeModuleFrame: parsing packet with length %d, api_id 0x%X' % (len(data), api_id)
         # Raise exception containing real / expected value if checksum fails
         if not validate_checksum(data, offset=2):
             raise ChecksumFail(ord(data[-1]), generate_checksum(data))
         
         # Parse and return specific packet structure
         if api_id not in API_IDS:
-            raise UnknownFrameType(api_id)
+            raise UnknownFrameType("Received unknown frame, api_id=0x%X" % api_id)
         ptype = API_IDS[api_id]
         if ptype.length_mod:
             signature = ptype.signature % (length - ptype.length_mod)
@@ -168,6 +167,9 @@ class TransmitStatus(XBeeModuleFrame):
         self.retries = retries
         self.status = (status, self.statuses.get(status, 'Unknown Status'))
         self.discovery = discovery
+    
+    def __str__(self):
+        return '[Status for frame %d: %s]' % (self.frame_id, self.status)
 
 class ReceivePacket(XBeeModuleFrame):
     """ When the module receives an RF packet, it is sent out the UART using this message type. """
@@ -179,7 +181,21 @@ class ReceivePacket(XBeeModuleFrame):
         self.net_addr = net_addr
         self.options = options
         self.rf_data = rf_data
-
+        
+    def __str__(self):
+        return '[Received %d bytes from 0x%X]' % (len(self.rf_data), self.hw_addr)
+        
+class ModemStatus(XBeeModuleFrame):
+    """ RF module status messages are sent from the module in response to specific conditions."""
+    signature = '>3xBx'
+    api_id = 0x8A
+    statuses = {0:'Hardware Reset', 1:'Watchdog Timer Reset', 2:'Associated', 3:'Disassociated', 
+                4:'Synchonization Lost', 5:'Coordinator Re-alignment', 6:'Coordinator started'}
+    def __init__(self, status):
+        self.status = (status, self.statuses.get(status, 'Unknown Status'))
+        
+    def __str__(self):
+        return '[Modem Status: %s]' % (self.status,)
         
 class XBeeClientFrame(object):
     """Abstract class for constructing new packets to send to XBee module"""
@@ -201,12 +217,14 @@ class TransmitRequest(XBeeClientFrame):
     api_id = 0x10
     signature = '>BBQHBB%ds'
     def __init__(self, hw_addr, rf_data, frame_id=0, net_addr=0xFFFE):
+        print 'building TransmitRequest of %d bytes' % len(rf_data)
+        print rf_data
         self.frame_id = frame_id
         self.fields = (self.api_id, frame_id, hw_addr, net_addr, 0x00, 0x00, rf_data)
         self.signature = self.signature % len(rf_data)
         self.length = len(rf_data) + 14
    
-API_IDS = {0x8B: TransmitStatus, 0x90: ReceivePacket}
+API_IDS = {0x8B: TransmitStatus, 0x90: ReceivePacket, 0x8A: ModemStatus}
 
 
 class XBeeModule(dbus.service.Object):
@@ -225,7 +243,7 @@ class XBeeModule(dbus.service.Object):
     @dbus.service.signal(dbus_interface=XBEED_INTERFACE, signature='ayt') 
     def RecievedData(self, rf_data, hw_addr):
         """ Called when data is received from the module """
-        print 'Received a packet of length %d' % len(rf_data)
+        pass
        
      
 def generate_checksum(frame, offset=0):
@@ -246,7 +264,8 @@ class ChecksumFail(Exception):
 class InvalidPacketLength(Exception): pass
 
 class UnknownFrameType(Exception):
-    pass
+    def __repr__():
+        return 'Unknown frame type'
     
 class SendFailure(dbus.DBusException):
     _dbus_error_name = 'org.turkinnovations.xbeed.SendFailure'
