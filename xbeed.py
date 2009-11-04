@@ -26,7 +26,6 @@ XBEED_INTERFACE = 'org.turkinnovations.xbeed.XBeeInterface'
 XBEED_DAEMON_OBJECT = '/XBeeInterfaces/%s'
 XBEED_MODULE_OBJECT = '/XBeeModules/%X'
 
-######################## Main serial and server classes ########################
 
 class XBeeDaemon(dbus.service.Object):
     """
@@ -36,14 +35,12 @@ class XBeeDaemon(dbus.service.Object):
     """
     def __init__(self, name, port, escaping=True, baudrate=9600):
         if escaping:
-            self.serial = FrameEscaper(port=port, baudrate=baudrate, timeout=0)
+            self.serial = EscapingSerial(port=port, baudrate=baudrate, timeout=0)
         else:
             self.serial = Serial(port=port, baudrate=baudrate, timeout=0)  
-             
         self.object_path = XBEED_DAEMON_OBJECT % name
         self.partial = PartialFrame()
-        
-        dbus.service.Object.__init__(self, dbus.SystemBus(), self.object_path)
+        dbus.service.Object.__init__(self, BUS_NAME, self.object_path)
         gobject.io_add_watch(self.serial.fileno(), gobject.IO_IN, self.serial_read)
         
     def serial_read(self, fd, condition, *args):
@@ -55,15 +52,16 @@ class XBeeDaemon(dbus.service.Object):
                 packet = XBeeModuleFrame.parse(*self.partial.get_data())
                 self.handle_packet(packet)
         except ChecksumFail, e:
-            print e      
+            print e  
+        except UnknownFrameType, e:
+            print e    
         return True # Keep calling this function when data is available
     
     def handle_packet(self, packet):
         if isinstance(packet, TransmitStatus):
             print 'Transmit status for packet %d received: %s' % (packet.frame_id, packet.status)
         elif isinstance(packet, ReceivePacket):
-            #XBeeModule.get(packet.hw_addr).RecievedData(packet.rf_data)
-            pass
+            XBeeModule.get(packet.hw_addr).RecievedData(packet.rf_data, packet.hw_addr)
             
     @dbus.service.method(XBEED_INTERFACE, in_signature='tayy', out_signature='')  
     def SendData(self, hw_addr, rf_data, frame_id):
@@ -76,46 +74,59 @@ class XBeeDaemon(dbus.service.Object):
     def GetInfo(self, arg):
         """ Returns some marginally useful info about the current xbeed instance """
         print 'xbeed: GetInfo called'
-        return self.object_path
+        return self.object_path2
         
-class FrameEscaper(Serial):
+    @dbus.service.method(XBEED_INTERFACE, in_signature='tay', out_signature='')
+    def FakeReceivedData(self, hw_addr, rf_data):
+        print 'Faking receive of packet from 0x%X, %d bytes' % (hw_addr, len(rf_data))
+        XBeeModule.get(hw_addr).RecievedData(rf_data, hw_addr)
+        
+class EscapingSerial(Serial):
     """
-    Escapes frame data as it's written to the serial port
+    Handles escaping and un-escaping of framing bytes
     Bytes 0x7E, 0x7D, 0x11, 0x13 are escaped as [0x7D, byte^0x20]
-    Note: this doesn't escape the first 0x7D
     """ 
+    def __init__(self, *args, **kwargs):
+        Serial.__init__(self, *args, **kwargs)
+        self.escape_flag = False
+        
     def write(self, data):
         Serial.write(self, ''.join(escape(data)))
        
     def read(self, size=1):
         data = Serial.read(self, size)
-        escaped = ''.join(unescape(data))
-        return escaped
-
-
-###################### Packet Types and parsing utilities ######################
+        out = StringIO()
+        for byte in data:
+            if self.escape_flag:
+                out.write(chr(ord(byte) ^ 0x20))
+                self.escape_flag = False
+            elif byte == '\x7D':
+                self.escape_flag = True
+            else:
+                out.write(byte)
+        return out.getvalue()
+                     
 
 class PartialFrame(object):
     """ Stores up serial data until a full frame is received """
     def __init__(self):
         self.buffer = ''
-        self.frame_len = 0
-        self.last = ()
-        
+        self.last = None
+     
     def add(self, data):
-        """ Adds new data to the frame, returning True if frame is complete """
-        self.buffer = ''.join([self.buffer, data])
-        if len(self.buffer) >= 6:
-            if not self.frame_len:
-                self.frame_len, self.api_id = unpack('>HB', self.buffer[1:4])
-            if len(self.buffer) >= (self.frame_len + 4):
-                self.last = (self.buffer[:self.frame_len+4], self.api_id, self.frame_len)
-                self.buffer = self.buffer[self.frame_len+4:]
-                self.frame_len = 0
+        packets = ''.join([self.buffer, data]).split('\x7E')
+        packets = packets[1:] if packets[0] == '' else packets
+        if(len(packets[0]) > 6):
+            frame_len, api_id = unpack('>HB', packets[0][0:3])
+            if len(packets[0]) >= (frame_len + 3):
+                self.last = (packets[0][:frame_len+3], api_id, frame_len)
+                self.buffer = ''.join(packets[1:])
                 return True
+        self.buffer = ''.join(packets)
         return False
-        
+    
     def get_data(self):
+        """ Returns all the buffered data """
         return self.last
 
 
@@ -128,12 +139,14 @@ class XBeeModuleFrame(object):
     
     @classmethod
     def parse(cls, data, api_id, length):
-        print 'XBeeModuleFrame: parsing packet with length %d, api_id 0x%X' % (length, api_id)
+        print 'XBeeModuleFrame: parsing packet with length %d, api_id 0x%X' % (len(data), api_id)
         # Raise exception containing real / expected value if checksum fails
-        if not validate_checksum(data, offset=3):
+        if not validate_checksum(data, offset=2):
             raise ChecksumFail(ord(data[-1]), generate_checksum(data))
         
         # Parse and return specific packet structure
+        if api_id not in API_IDS:
+            raise UnknownFrameType(api_id)
         ptype = API_IDS[api_id]
         if ptype.length_mod:
             signature = ptype.signature % (length - ptype.length_mod)
@@ -145,7 +158,7 @@ class XBeeModuleFrame(object):
 class TransmitStatus(XBeeModuleFrame):
     """ When a TX Request is completed, the module sends a TX Status message. This message
         will indicate if the packet was transmitted successfully or if there was a failure."""
-    signature = '>4xBHBBBx'
+    signature = '>3xBHBBBx'
     api_id = 0x8B
     statuses = {0x00:'Success', 0x02:'CCA Failure', 0x15:'Invalid Destination', 0x21:'ACK Failure',
                 0x22:'Not Joined', 0x23:'Self-Addressed', 0x24:'Address Not Found', 0x25:'Route Not Found'}
@@ -158,7 +171,7 @@ class TransmitStatus(XBeeModuleFrame):
 
 class ReceivePacket(XBeeModuleFrame):
     """ When the module receives an RF packet, it is sent out the UART using this message type. """
-    signature = '>4xQHB%dsx'
+    signature = '>3xQHB%dsx'
     length_mod = 12
     api_id = 0x90
     def __init__(self, hw_addr, net_addr, options, rf_data):
@@ -195,27 +208,25 @@ class TransmitRequest(XBeeClientFrame):
    
 API_IDS = {0x8B: TransmitStatus, 0x90: ReceivePacket}
 
-############################## XBee Status Object ##############################
 
 class XBeeModule(dbus.service.Object):
     """ Represents a remote XBee module, and signals when packets are received
         from that module."""
     modules = {}
     def __init__(self, hw_addr):
-        dbus.service.Object.__init__(self, dbus.SystemBus(), XBEED_MODULE_OBJECT % (hw_addr))
+        dbus.service.Object.__init__(self, BUS_NAME, XBEED_MODULE_OBJECT % (hw_addr))
     
     @classmethod
     def get(cls, hw_addr):
         if hw_addr not in cls.modules:
-            cls.modules[hw_addr] = dbus.service.Object.__new__(cls, hw_addr)
+            cls.modules[hw_addr] = XBeeModule(hw_addr)
         return cls.modules[hw_addr]
         
-    @dbus.service.signal(dbus_interface=XBEED_INTERFACE, signature='ay') 
-    def RecievedData(self, rf_data):
+    @dbus.service.signal(dbus_interface=XBEED_INTERFACE, signature='ayt') 
+    def RecievedData(self, rf_data, hw_addr):
         """ Called when data is received from the module """
         print 'Received a packet of length %d' % len(rf_data)
        
-###################### Checksum generation and validation ######################
      
 def generate_checksum(frame, offset=0):
     """ Generates the checksum byte for this frame. The algorithm consists of
@@ -227,8 +238,6 @@ def validate_checksum(frame, offset=0):
     """ Validates the checksum by adding all bytes and comparing to 0xFF """
     return (reduce(lambda x, y: x + ord(y), frame[offset:], 0x00) & 0xFF) == 0xFF
 
-
-############################# Exceptions / Errors ##############################
 
 class ChecksumFail(Exception):
     def __str__(self):
@@ -242,8 +251,9 @@ class UnknownFrameType(Exception):
 class SendFailure(dbus.DBusException):
     _dbus_error_name = 'org.turkinnovations.xbeed.SendFailure'
 
+class UnknownFrameType(Exception):
+    pass
 
-############################## Utility Functions ###############################
 
 def escape(data):
     yield data[0]
@@ -271,13 +281,14 @@ def getModuleByName(hw_addr):
     return (XBEED_SERVICE, XBEED_MODULE_OBJECT % hw_addr)
     
 def printHex(data):
-    print '#'
     for byte in data:
         print '0x%X ' % ord(byte),
-    print '#' 
      
 
+BUS_NAME = None
+
 def main(argv=None):
+    global BUS_NAME
     usage = "usage: %prog [options] <dbus label> <serial port>"
     parser = OptionParser(usage)
     parser.add_option("-q", "--quiet",
@@ -291,14 +302,19 @@ def main(argv=None):
     parser.add_option("-n", "--no-escaping",
                       action="store_false", dest="escaping", default="True",
                       help="disable escaping of serial frame data")
-
+    parser.add_option("-s", "--session-bus",
+                      action="store_false", dest="system", default="True",
+                      help="Use current session bus instead of system bus")
     (options, args) = parser.parse_args()
+    
     if len(args) != 2:
             parser.error("incorrect number of arguments")
     
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
-    name = dbus.service.BusName(XBEED_SERVICE, dbus.SystemBus())
+    bus = dbus.SystemBus() if options.system else dbus.SessionBus()
+    BUS_NAME = dbus.service.BusName(XBEED_SERVICE, bus)
+    
     daemon = XBeeDaemon(name=args[0], port=args[1], baudrate=options.baudrate, escaping=options.escaping)
 
     mainloop = gobject.MainLoop()
