@@ -46,7 +46,7 @@ class XBeeDaemon(dbus.service.Object):
     def serial_read(self, fd, condition, *args):
         """ Called when there is data available from the serial port """
         buffer = self.serial.read(256)
-        
+        print 'read %d bytes' % len(buffer)
         try:
             if(self.partial.add(buffer)):
                 packet = XBeeModuleFrame.parse(*self.partial.get_data())
@@ -62,8 +62,8 @@ class XBeeDaemon(dbus.service.Object):
         if isinstance(packet, ReceivePacket):
             XBeeModule.get(packet.hw_addr).RecievedData(packet.rf_data, packet.hw_addr)
             
-    @dbus.service.method(XBEED_INTERFACE, in_signature='tayy', out_signature='', byte_arrays=True)  
-    def SendData(self, hw_addr, rf_data, frame_id):
+    @dbus.service.method(XBEED_INTERFACE, in_signature='ayty', out_signature='', byte_arrays=True)  
+    def SendData(self, rf_data, hw_addr, frame_id):
         """ Sends an RF data packet to the specified XBee module """
         print 'xbeed: SendData called, sending %d bytes to address 0x%X' % (len(rf_data), hw_addr)
         packet = TransmitRequest(hw_addr=hw_addr, rf_data=str(rf_data), frame_id=frame_id)
@@ -73,11 +73,11 @@ class XBeeDaemon(dbus.service.Object):
     def GetInfo(self, arg):
         """ Returns some marginally useful info about the current xbeed instance """
         print 'xbeed: GetInfo called'
-        return self.object_path2
+        return self.object_path
         
     @dbus.service.method(XBEED_INTERFACE, in_signature='tay', out_signature='', byte_arrays=True)
-    def FakeReceivedData(self, hw_addr, rf_data):
-        print 'Faking receive of packet from 0x%X, %d bytes' % (hw_addr, len(rf_data))
+    def FakeReceivedData(self, rf_data, hw_addr):
+        print 'Faking receive of packet from 0x%X, %d bytes' % (hw_addr, len(rf_data)) 
         XBeeModule.get(hw_addr).RecievedData(rf_data, hw_addr)
         
 class EscapingSerial(Serial):
@@ -90,7 +90,6 @@ class EscapingSerial(Serial):
         self.escape_flag = False
         
     def write(self, data):
-        print 'writing %d bytes to serial port' % len(data)
         Serial.write(self, ''.join(escape(data)))
        
     def read(self, size=1):
@@ -141,7 +140,7 @@ class XBeeModuleFrame(object):
     def parse(cls, data, api_id, length):
         # Raise exception containing real / expected value if checksum fails
         if not validate_checksum(data, offset=2):
-            raise ChecksumFail(ord(data[-1]), generate_checksum(data))
+            raise ChecksumFail(ord(data[-1]), generate_checksum(data, offset=2))
         
         # Parse and return specific packet structure
         if api_id not in API_IDS:
@@ -217,8 +216,6 @@ class TransmitRequest(XBeeClientFrame):
     api_id = 0x10
     signature = '>BBQHBB%ds'
     def __init__(self, hw_addr, rf_data, frame_id=0, net_addr=0xFFFE):
-        print 'building TransmitRequest of %d bytes' % len(rf_data)
-        print rf_data
         self.frame_id = frame_id
         self.fields = (self.api_id, frame_id, hw_addr, net_addr, 0x00, 0x00, rf_data)
         self.signature = self.signature % len(rf_data)
@@ -293,13 +290,17 @@ def unescape(data):
             escape_flag = False
 
 
-def getDaemonByName(name):
-    return (XBEED_SERVICE, XBEED_DAEMON_OBJECT % name)
+def get_daemon(name, bus):
+    return bus.get_object(XBEED_SERVICE, XBEED_DAEMON_OBJECT % name)
   
-def getModuleByName(hw_addr):
-    return (XBEED_SERVICE, XBEED_MODULE_OBJECT % hw_addr)
-    
-def printHex(data):
+def get_module(hw_addr, bus):
+    return bus.get_object(XBEED_SERVICE, XBEED_MODULE_OBJECT % hw_addr)
+        
+def fake_data(name, bus, hw_addr, data):
+    daemon = get_daemon(name, bus)
+    daemon.FakeReceivedData(dbus.ByteArray(data), dbus.UInt64(hw_addr))
+
+def print_hex(data):
     for byte in data:
         print '0x%X ' % ord(byte),
      
@@ -332,6 +333,7 @@ def main(argv=None):
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
     bus = dbus.SystemBus() if options.system else dbus.SessionBus()
+    print bus
     BUS_NAME = dbus.service.BusName(XBEED_SERVICE, bus)
     
     daemon = XBeeDaemon(name=args[0], port=args[1], baudrate=options.baudrate, escaping=options.escaping)
