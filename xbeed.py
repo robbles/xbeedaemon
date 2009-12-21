@@ -46,19 +46,18 @@ class XBeeDaemon(dbus.service.Object):
     def serial_read(self, fd, condition, *args):
         """ Called when there is data available from the serial port """
         buffer = self.serial.read(256)
-        print 'read %d bytes' % len(buffer)
+        print 'xbeed: read %d bytes' % len(buffer)
         try:
             if(self.partial.add(buffer)):
                 packet = XBeeModuleFrame.parse(*self.partial.get_data())
                 self.handle_packet(packet)
         except ChecksumFail, e:
-            print e  
+            print 'xbeed: ', e  
         except UnknownFrameType, e:
-            print e    
+            print 'xbeed: ', e  
         return True # Keep calling this function when data is available
     
     def handle_packet(self, packet):
-        print packet
         if isinstance(packet, ReceivePacket):
             XBeeModule.get(packet.hw_addr).RecievedData(packet.rf_data, packet.hw_addr)
             
@@ -77,7 +76,7 @@ class XBeeDaemon(dbus.service.Object):
         
     @dbus.service.method(XBEED_INTERFACE, in_signature='tay', out_signature='', byte_arrays=True)
     def FakeReceivedData(self, rf_data, hw_addr):
-        print 'Faking receive of packet from 0x%X, %d bytes' % (hw_addr, len(rf_data)) 
+        print 'xbeed: Faking receive of packet from 0x%X, %d bytes' % (hw_addr, len(rf_data)) 
         XBeeModule.get(hw_addr).RecievedData(rf_data, hw_addr)
         
 class EscapingSerial(Serial):
@@ -206,11 +205,14 @@ class XBeeClientFrame(object):
         
     def write_frame(self, fd):
         """ Writes the binary representation of the packet to a file-like object """
-        fd.write(pack('>BH', 0x7E, self.length))
-        frame_data = pack(self.signature, *self.fields)
-        checksum = generate_checksum(frame_data)
-        fd.write(frame_data)
-        fd.write(chr(checksum))
+        try:
+            fd.write(pack('>BH', 0x7E, self.length))
+            frame_data = pack(self.signature, *self.fields)
+            checksum = generate_checksum(frame_data)
+            fd.write(frame_data)
+            fd.write(chr(checksum))
+        except OSError:
+            print 'xbeed: Error writing to serial port'
         
 class TransmitRequest(XBeeClientFrame):
     api_id = 0x10
