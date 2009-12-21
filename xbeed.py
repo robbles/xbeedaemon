@@ -333,13 +333,11 @@ def main(argv=None):
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
     bus = dbus.SystemBus() if options.system else dbus.SessionBus()
-    print bus
     BUS_NAME = dbus.service.BusName(XBEED_SERVICE, bus)
     
     daemon = XBeeDaemon(name=args[0], port=args[1], baudrate=options.baudrate, escaping=options.escaping)
 
     mainloop = gobject.MainLoop()
-    print "Running xbeed interface..."
     mainloop.run()     
 
 if __name__ == "__main__":
