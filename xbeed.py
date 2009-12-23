@@ -327,7 +327,7 @@ def main():
 
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
-    bus = getattr(dbus, conf['bus'], 'SystemBus')()
+    bus = getattr(dbus, conf.get('bus', 'SystemBus'))()
     BUS_NAME = dbus.service.BusName(XBEED_SERVICE, bus)
     
     daemon = XBeeDaemon(name=conf['name'], port=conf['port'], baudrate=conf['baudrate'], escaping=conf['escaping'])
