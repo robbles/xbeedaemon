@@ -15,6 +15,7 @@ from optparse import OptionParser
 from serial import Serial
 from struct import pack, unpack
 from StringIO import StringIO
+import yaml
 
 import gobject
 import dbus
@@ -309,35 +310,27 @@ def print_hex(data):
 
 BUS_NAME = None
 
-def main(argv=None):
+def main():
     global BUS_NAME
-    usage = "usage: %prog [options] <dbus label> <serial port>"
+    usage = "usage: %prog [options]"
     parser = OptionParser(usage)
-    parser.add_option("-q", "--quiet",
-                      action="store_false", dest="verbose", default=True,
-                      help="don't print status messages to stdout")
-    parser.add_option("-f", "--foreground",
-                      action="store_false", dest="daemon", default=True,
-                      help="run in foreground instead of forking a daemon process")
-    parser.add_option("-b", "--baudrate", dest="baudrate", type="int", default=9600,
-                      help="set serial baudrate")
-    parser.add_option("-n", "--no-escaping",
-                      action="store_false", dest="escaping", default="True",
-                      help="disable escaping of serial frame data")
-    parser.add_option("-s", "--session-bus",
-                      action="store_false", dest="system", default="True",
-                      help="Use current session bus instead of system bus")
+    parser.add_option("-f", "--config-file", dest="config", type="string", default='core.yml',
+                      help="default configuration file")
     (options, args) = parser.parse_args()
     
-    if len(args) != 2:
-            parser.error("incorrect number of arguments")
-    
+    try:
+        conf = yaml.load(open(options.config, 'rU'))['xbeed']
+    except:
+        print 'xbeed: error loading config file'
+        parser.print_help()
+        exit(1)
+
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
-    bus = dbus.SystemBus() if options.system else dbus.SessionBus()
+    bus = getattr(dbus, conf['bus'], 'SystemBus')()
     BUS_NAME = dbus.service.BusName(XBEED_SERVICE, bus)
     
-    daemon = XBeeDaemon(name=args[0], port=args[1], baudrate=options.baudrate, escaping=options.escaping)
+    daemon = XBeeDaemon(name=conf['name'], port=conf['port'], baudrate=conf['baudrate'], escaping=conf['escaping'])
 
     mainloop = gobject.MainLoop()
     mainloop.run()     
