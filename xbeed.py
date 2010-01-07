@@ -10,6 +10,7 @@ Created by Rob O'Dwyer on 2009-10-21.
 Copyright (c) 2009 Turk Innovations. All rights reserved.
 """
 
+import os
 import sys
 from optparse import OptionParser
 from serial import Serial
@@ -319,7 +320,8 @@ def main():
     (options, args) = parser.parse_args()
     
     try:
-        conf = yaml.load(open(options.config, 'rU'))['xbeed']
+        conf_file = os.getenv('TURK_CORE_CONF', options.config)
+        conf = yaml.load(open(conf_file, 'rU'))['xbeed']
     except:
         print 'xbeed: error loading config file'
         parser.print_help()
